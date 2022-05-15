@@ -84,7 +84,7 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, format, noVideo, noAudio) {
 
         })
         .on("stderr", (err) => {
-            //console.log(err)
+            console.log(err)
         })
 
     NewFfmpeg.pipe(pipe, { end: true })
@@ -114,18 +114,20 @@ app.get("/transcode/:id", async (req, res) => {
 app.get("/connection", async (req, res) => {
     const id = uuid.v4().split("-").join("")
     let video_path
+    let metadata_path = path.join(settings.metadata, req.query.name, "metadata.json")
 
     switch (req.query.type) {
         case "movies":
-            video_path = path.join(settings.media, "movies", req.query.name, fs.readdirSync(video_path, "utf-8")[0])
+            var metadata = fs.readJsonSync(metadata_path)
+            video_path = metadata.file_name
             break;
         case "series":
-            video_path = path.join(settings.media, "series", req.query.name, req.query.season)
-            video_path = path.join(video_path, getChildfromParent(video_path, `E${req.query.episode}`)[0])
+            var metadata = fs.readJsonSync(metadata_path).seasons[req.query.season].episodes
+            var result = Object.keys(metadata).map((key) => [key,metadata[key]])
+            video_path = ((result.find(element => element[0].includes(req.query.episode)))[1]).file_name
             break;
         case "dvr":
-            video_path = path.join(settings.media, "series", req.query.name, req.query.season)
-            video_path = path.join(video_path, getChildfromParent(video_path, req.query.name.toString())[0])
+
             break;
         case "tv":
             for (let tuner of settings.tv_tuners) {
