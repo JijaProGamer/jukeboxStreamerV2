@@ -29,6 +29,8 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, format) {
             .format(format)
             .outputOptions(["-movflags", "frag_keyframe+empty_moov+faststart"])
             .addOption(["-preset", connection.preset])
+            .addOption(["-vsync","1"])
+            .addOption(["-pix_fmt", "yuv420p"])
             .addOption(["-sn"])
             .addOption(["-b:v", "250M"])
             .addOption(["-b:a", "1411k"])
@@ -59,9 +61,9 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, format) {
             }).on("close", () => {
 
             })
-            /*.on("stderr", (err) => {
+            .on("stderr", (err) => {
                 console.log(err)
-            })*/
+            })
 
         NewFfmpeg.pipe(pipe, { end: true })
     } else {
