@@ -4,116 +4,115 @@ const express = require("express")
 const fluent_ffmpeg = require("fluent-ffmpeg");
 const uuid = require("uuid")
 const gaxios = require("gaxios")
+const helmet = require('helmet')
 
+const { PassThrough } = require("stream");
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
-const { parse: YamlParse } = require('yaml');
+const yaml = require('yaml');
 
 fluent_ffmpeg.setFfmpegPath(ffmpegPath)
 //fluent_ffmpeg.setFfmpegPath("C:\\Users\\bloxx\\OneDrive\\Desktop\\suite\\local64\\bin-video\\ffmpeg.exe")
 
 const app = express()
-app.disable('x-powered-by')
 
-let settings = YamlParse(fs.readFileSync(path.join("C:\\Users\\bloxx\\OneDrive\\Desktop\\Development\\newJukebox", 'settings.yaml'), "utf-8"))
+app.use(helmet())
 
-function getChildfromParent(parentDir, includes) {
-    let results = []
-
-    for (const [index, value] of fs.readdirSync(parentDir).entries()) {
-        if (value.includes(includes)) {
-            results.push(value)
-        }
-    }
-
-    return results
-}
+let settings
+let settingsPath
 
 let connections = {}
 
-function doFfmpeg(req, res, pipe, vcodec, acodec, format, noVideo, noAudio) {
+function doFfmpeg(req, res, pipe, vcodec, acodec, format) {
     const connection = connections[req.params.id]
+    if (connection) {
+        let NewFfmpeg = fluent_ffmpeg(connection.path)
+            .format(format)
+            .outputOptions(["-movflags", "frag_keyframe+empty_moov+faststart"])
+            .addOption(["-preset", connection.preset])
+            .addOption(["-sn"])
+            .addOption(["-b:v", "250M"])
+            .addOption(["-b:a", "1411k"])
+            .audioCodec(acodec)
+            .videoCodec(vcodec)
 
-    let NewFfmpeg = fluent_ffmpeg(connection.path)
-        .format(format)
-        .outputOptions(["-movflags", "frag_keyframe+empty_moov+faststart"])
-        .addOption(["-preset", connection.preset])
-        .addOption("-sn")
-
-    if (req.query.time) {
-        if (!(["tv"].includes(connection.type))) {
-            NewFfmpeg.addInputOption(["-ss", req.query.time])
-        }
-    }
-
-    if (noAudio) {
-        if (!(["tv"].includes(connection.type))) {
-            NewFfmpeg.noAudio()
-        }
-    } else {
-        if (acodec !== "copy") {
-            NewFfmpeg.audioCodec(acodec)
-        }
-    }
-
-    if (noVideo) {
-        if (!(["tv"].includes(connection.type))) {
-            NewFfmpeg.noVideo()
-        }
-    } else {
-        if (vcodec !== "copy") {
-            NewFfmpeg.videoCodec(vcodec)
-        }
-    }
-
-    if (req.query.resolution) {
-        NewFfmpeg.addOption(["-vf", `scale=2:${req.query.resolution}`])
-    }
-
-    connections[req.params.id].streams.push(NewFfmpeg)
-
-    NewFfmpeg.on("end", () => { })
-        .on("error", (err) => {
-            err = err.toString()
-
-            if (!err.includes("Output stream closed")) {
-                if (!err.includes("SIGKILL")) {
-                    console.log(err)
-                }
+        if (req.query.time) {
+            if (!(["tv"].includes(connection.type))) {
+                NewFfmpeg.addInputOption(["-ss", req.query.time])
             }
-        }).on("close", () => {
+        }
 
-        })
-        .on("stderr", (err) => {
-            console.log(err)
-        })
+        if (req.query.resolution) {
+            NewFfmpeg.addOption(["-vf", `scale=2:${req.query.resolution}`])
+        }
 
-    NewFfmpeg.pipe(pipe, { end: true })
+        connections[req.params.id].streams.push(NewFfmpeg)
+
+        NewFfmpeg.on("end", () => { })
+            .on("error", (err) => {
+                err = err.toString()
+
+                if (!err.includes("Output stream closed")) {
+                    if (!err.includes("SIGKILL")) {
+                        console.log(err)
+                    }
+                }
+            }).on("close", () => {
+
+            })
+            /*.on("stderr", (err) => {
+                console.log(err)
+            })*/
+
+        NewFfmpeg.pipe(pipe, { end: true })
+    } else {
+        res.sendStatus(404)
+    }
 }
+
+app.get("/settings/:path", async(req,res) => {
+    settingsPath = req.params.path
+    settings = yaml.parse(fs.readFileSync(path.join(settingsPath, 'settings.yaml'), "utf-8"))
+})
 
 app.get("/transcode/:id", async (req, res) => {
     const connection = connections[req.params.id]
 
     if (connection.output) {
-        let noVideo = connection.novideo
-        let noAudio = connection.noaudio
-        if (connection.copy) {
-            doFfmpeg(req, res, res, "copy", "copy", settings.ffmpeg_VideoFormat, noVideo, noAudio)
-        } else {
-            doFfmpeg(req, res, res, connection.vcodec, connection.acodec, settings.ffmpeg_VideoFormat, noVideo, noAudio)
+        let Stream = new PassThrough()
+
+        Stream.pipe(res, {end: true})
+
+        if (connection.record) {
+            let name = fs.readdirSync(path.join(settings.media, "dvr"), "utf-8").length
+            let stream = fs.createWriteStream(path.join(settings.media, "dvr", `${name + 1}.mkv`))
+
+            Stream.pipe(stream, {end: true})
         }
-    }
 
-    if (connection.record) {
-        let name = fs.readdirSync(path.join(settings.media, "dvr"), "utf-8").length
-        let stream = fs.createWriteStream(path.join(settings.media, "dvr", `${name}.mkv`))
+        Stream.on("finish", () => {
+            connection.streams.forEach((value, index) => {
+                value.kill()
+            })
 
-        doFfmpeg(req, res, stream, "copy", connection.acodec, "matroska")
+            delete connections[req.params.id]
+        })
+
+        Stream.on("end", () => {
+            connection.streams.forEach((value, index) => {
+                value.kill()
+            })
+
+            delete connections[req.params.id]
+        })
+
+        doFfmpeg(req, res, Stream, connection.vcodec, connection.acodec, settings.ffmpeg_VideoFormat)
     }
 })
 
 app.get("/connection", async (req, res) => {
     const id = uuid.v4().split("-").join("")
     let video_path
+    let url = false
     let metadata_path = path.join(settings.metadata, req.query.name, "metadata.json")
 
     switch (req.query.type) {
@@ -123,7 +122,7 @@ app.get("/connection", async (req, res) => {
             break;
         case "series":
             var metadata = fs.readJsonSync(metadata_path).seasons[req.query.season].episodes
-            var result = Object.keys(metadata).map((key) => [key,metadata[key]])
+            var result = Object.keys(metadata).map((key) => [key, metadata[key]])
             video_path = ((result.find(element => element[0].includes(req.query.episode)))[1]).file_name
             break;
         case "dvr":
@@ -139,6 +138,7 @@ app.get("/connection", async (req, res) => {
                         response.entries.forEach((value, index) => {
                             if (value.name.toLowerCase() == req.query.name.toLowerCase()) {
                                 video_path = `${tuner.ip}/stream/channel/${value.uuid}`
+                                url = true
                             }
                         })
                         break
@@ -150,8 +150,17 @@ app.get("/connection", async (req, res) => {
             break;
     }
 
-    connections[id] = { streams: [], noaudio: req.query.noaudio, novideo: req.query.novideo, copy: req.query.copy, output: req.query.output, record: req.query.record_dvr, type: req.query.type, path: video_path, vcodec: req.query.video_codec, acodec: req.query.audio_codec, preset: req.query.preset }
-    res.send(id)
+    fs.pathExists(video_path, (err, exists) => {
+        if (err) {
+            return console.log(err)
+        }
+        if (exists || url) {
+            connections[id] = { streams: [], output: req.query.output, record: req.query.record_dvr, type: req.query.type, path: video_path, vcodec: req.query.video_codec, acodec: req.query.audio_codec, preset: req.query.preset }
+            res.send(id)
+        } else {
+            res.sendStatus(404)
+        }
+    })
 })
 
 app.get("/ping", (req, res) => {
@@ -167,10 +176,11 @@ app.delete("/remove/:id", (req, res) => {
             value.kill()
         })
 
+        res.sendStatus(204)
         delete connections[req.params.id]
+    } else {
+        res.sendStatus(404)
     }
-
-    res.sendStatus(204)
 })
 
 app.listen(5391)
