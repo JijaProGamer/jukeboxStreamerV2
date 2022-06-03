@@ -22,29 +22,31 @@ let settingsPath
 
 let connections = {}
 
-function doFfmpeg(req, res, pipe, vcodec, acodec, format) {
+function doFfmpeg(req, res, pipe, vcodec, acodec, abitrate, vbitrate, resolution, format) {
     const connection = connections[req.params.id]
+
     if (connection) {
         let NewFfmpeg = fluent_ffmpeg(connection.path)
             .format(format)
             .outputOptions(["-movflags", "frag_keyframe+empty_moov+faststart"])
             .addOption(["-preset", connection.preset])
-            .addOption(["-vsync","1"])
+            .addOption(["-vsync", "1"])
             .addOption(["-pix_fmt", "yuv420p"])
             .addOption(["-sn"])
-            .addOption(["-b:v", "250M"])
-            .addOption(["-b:a", "1411k"])
+            .addOption(["-b:v", `${vbitrate}M`])
+            .addOption(["-b:a", `${abitrate}k`])
+            .addOption(["-max_muxing_queue_size", "1024"])
             .audioCodec(acodec)
             .videoCodec(vcodec)
+
+        if (resolution !== "Copy") {
+            NewFfmpeg.addOption(["-vf", `scale=${resolution.split("x").join(":")}`])
+        }
 
         if (req.query.time) {
             if (!(["tv"].includes(connection.type))) {
                 NewFfmpeg.addInputOption(["-ss", req.query.time])
             }
-        }
-
-        if (req.query.resolution) {
-            NewFfmpeg.addOption(["-vf", `scale=2:${req.query.resolution}`])
         }
 
         connections[req.params.id].streams.push(NewFfmpeg)
@@ -71,7 +73,7 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, format) {
     }
 }
 
-app.get("/settings/:path", async(req,res) => {
+app.get("/settings/:path", async (req, res) => {
     settingsPath = req.params.path
     settings = yaml.parse(fs.readFileSync(path.join(settingsPath, 'settings.yaml'), "utf-8"))
 })
@@ -82,13 +84,13 @@ app.get("/transcode/:id", async (req, res) => {
     if (connection.output) {
         let Stream = new PassThrough()
 
-        Stream.pipe(res, {end: true})
+        Stream.pipe(res, { end: true })
 
         if (connection.record) {
             let name = fs.readdirSync(path.join(settings.media, "dvr"), "utf-8").length
             let stream = fs.createWriteStream(path.join(settings.media, "dvr", `${name + 1}.mkv`))
 
-            Stream.pipe(stream, {end: true})
+            Stream.pipe(stream, { end: true })
         }
 
         Stream.on("finish", () => {
@@ -107,7 +109,7 @@ app.get("/transcode/:id", async (req, res) => {
             delete connections[req.params.id]
         })
 
-        doFfmpeg(req, res, Stream, connection.vcodec, connection.acodec, settings.ffmpeg_VideoFormat)
+        doFfmpeg(req, res, Stream, connection.vcodec, connection.acodec, connection.abitrate, connection.vbitrate, connection.resolution, settings.ffmpeg_VideoFormat)
     }
 })
 
@@ -157,7 +159,19 @@ app.get("/connection", async (req, res) => {
             return console.log(err)
         }
         if (exists || url) {
-            connections[id] = { streams: [], output: req.query.output, record: req.query.record_dvr, type: req.query.type, path: video_path, vcodec: req.query.video_codec, acodec: req.query.audio_codec, preset: req.query.preset }
+            connections[id] = {
+                streams: [],
+                resolution: req.query.resolution,
+                output: req.query.output,
+                record: req.query.record_dvr,
+                type: req.query.type,
+                path: video_path,
+                vcodec: req.query.video_codec,
+                acodec: req.query.audio_codec,
+                preset: req.query.preset,
+                abitrate: req.query.abitrate,
+                vbitrate: req.query.vbitrate,
+            }
             res.send(id)
         } else {
             res.sendStatus(404)
