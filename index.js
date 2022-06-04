@@ -28,7 +28,10 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, abitrate, vbitrate, resolution
     if (connection) {
         let NewFfmpeg = fluent_ffmpeg(connection.path)
             .format(format)
-            .outputOptions(["-movflags", "frag_keyframe+empty_moov+faststart"])
+            .outputOptions([
+                "-movflags frag_keyframe+empty_moov+faststart",
+                "-movflags +faststart"
+            ])
             .addOption(["-preset", connection.preset])
             .addOption(["-vsync", "1"])
             .addOption(["-pix_fmt", "yuv420p"])
