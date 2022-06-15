@@ -4,6 +4,7 @@ const express = require("express")
 const fluent_ffmpeg = require("fluent-ffmpeg");
 const uuid = require("uuid")
 const gaxios = require("gaxios")
+const chalk = require("chalk")
 const helmet = require('helmet')
 
 const { PassThrough } = require("stream");
@@ -11,10 +12,11 @@ const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const yaml = require('yaml');
 
 fluent_ffmpeg.setFfmpegPath(ffmpegPath)
-//fluent_ffmpeg.setFfmpegPath("C:\\Users\\bloxx\\OneDrive\\Desktop\\suite\\local64\\bin-video\\ffmpeg.exe")
 
 const app = express()
 
+app.use(express.urlencoded({ extended: true }))
+app.use(express.json())
 app.use(helmet())
 
 let settings
@@ -29,8 +31,8 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, abitrate, vbitrate, resolution
         let NewFfmpeg = fluent_ffmpeg(connection.path)
             .format(format)
             .outputOptions([
-                "-movflags frag_keyframe+empty_moov+faststart",
-                "-movflags +faststart"
+                "-movflags frag_keyframe+empty_moov",
+                //"-movflags +faststart"
             ])
             .addOption(["-preset", connection.preset])
             .addOption(["-vsync", "1"])
@@ -60,14 +62,14 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, abitrate, vbitrate, resolution
 
                 if (!err.includes("Output stream closed")) {
                     if (!err.includes("SIGKILL")) {
-                        console.log(err)
+                        console.log(chalk.red(err))
                     }
                 }
             }).on("close", () => {
 
             })
             .on("stderr", (err) => {
-                console.log(err)
+                console.log(chalk.blue(err))
             })
 
         NewFfmpeg.pipe(pipe, { end: true })
@@ -76,43 +78,73 @@ function doFfmpeg(req, res, pipe, vcodec, acodec, abitrate, vbitrate, resolution
     }
 }
 
-app.get("/settings/:path", async (req, res) => {
+app.post("/settings/:path", async (req, res) => {
     settingsPath = req.params.path
     settings = yaml.parse(fs.readFileSync(path.join(settingsPath, 'settings.yaml'), "utf-8"))
 })
 
 app.get("/transcode/:id", async (req, res) => {
     const connection = connections[req.params.id]
+    const metadata_path = connection.metadata_path
 
     if (connection.output) {
-        let Stream = new PassThrough()
+        fs.readJson(metadata_path, (err, metadata) => {
+            if (err) return chalk.red(err)
 
-        Stream.pipe(res, { end: true })
+            let Stream = new PassThrough()
+            connections[req.params.id].parentStream = Stream
 
-        if (connection.record) {
-            let name = fs.readdirSync(path.join(settings.media, "dvr"), "utf-8").length
-            let stream = fs.createWriteStream(path.join(settings.media, "dvr", `${name + 1}.mkv`))
+            Stream.pipe(res, { end: true })
 
-            Stream.pipe(stream, { end: true })
-        }
+            if (connection.record) {
+                let name = fs.readdirSync(path.join(settings.media, "dvr"), "utf-8").length
+                let stream = fs.createWriteStream(path.join(settings.media, "dvr", `${name + 1}.mkv`))
 
-        Stream.on("finish", () => {
-            connection.streams.forEach((value, index) => {
-                value.kill()
+                Stream.pipe(stream, { end: true })
+            }
+
+            Stream.on("finish", () => {
+                connection.streams.forEach((value, index) => {
+                    value.kill()
+                })
+
+                delete connections[req.params.id]
             })
 
-            delete connections[req.params.id]
-        })
+            Stream.on("end", () => {
+                connection.streams.forEach((value, index) => {
+                    value.kill()
+                })
 
-        Stream.on("end", () => {
-            connection.streams.forEach((value, index) => {
-                value.kill()
+                delete connections[req.params.id]
             })
 
-            delete connections[req.params.id]
+            if (connection.type == "tv") {
+                doFfmpeg(
+                    req,
+                    res,
+                    Stream,
+                    connection.vcodec,
+                    connection.acodec,
+                    connection.abitrate,
+                    connection.vbitrate,
+                    connection.resolution,
+                    settings.ffmpeg_VideoFormat
+                )
+            } else {
+                doFfmpeg(
+                    req,
+                    res,
+                    Stream,
+                    connection.vcodec,
+                    connection.acodec,
+                    connection.abitrate,
+                    connection.vbitrate,
+                    connection.resolution,
+                    settings.ffmpeg_VideoFormat
+                )
+            }
         })
-
-        doFfmpeg(req, res, Stream, connection.vcodec, connection.acodec, connection.abitrate, connection.vbitrate, connection.resolution, settings.ffmpeg_VideoFormat)
     }
 })
 
@@ -174,6 +206,7 @@ app.get("/connection", async (req, res) => {
                 preset: req.query.preset,
                 abitrate: req.query.abitrate,
                 vbitrate: req.query.vbitrate,
+                metadata_path,
             }
             res.send(id)
         } else {
